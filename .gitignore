@@ -1,0 +1,8 @@
+/outputs/
+/logs/
+/data/warfarin_dat.csv
+/.julia/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
