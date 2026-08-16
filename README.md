@@ -61,4 +61,4 @@ julia -t 2 --project=. flipflop_combined_multistart.jl
 
 ## Reproducibility scope
 
-The source package intentionally contains the implementations necessary to reproduce the reported combined-error case studies. It does not include manuscript figures, private workspace files, historical additive-only analyses, or output bundles. The repository’s license states the applicable reuse terms.
+The source package contains the implementations necessary to reproduce the reported combined-error case studies.
