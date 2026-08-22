@@ -951,6 +951,30 @@ function method_evaluator(method::String, subjects::Vector{SubjectData}, represe
     elseif method == "FULL_IMPLICIT"
         return x -> full_implicit_value_grad(subjects, x, representation; dt=dt,
                                              maxiter_eta=maxiter_eta, eta_cache=eta_cache)
+    elseif method == "FULL_IMPLICIT_REVERSE_VJP"
+        return x -> full_implicit_reverse_vjp_value_grad(subjects, x, representation; dt=dt,
+                                                         maxiter_eta=maxiter_eta, eta_cache=eta_cache)
+    elseif method == "HYBRID_FF_REVERSE_VJP"
+        return x -> full_implicit_hybrid_ff_reverse_vjp_value_grad(subjects, x, representation; dt=dt,
+                                                                     maxiter_eta=maxiter_eta, eta_cache=eta_cache)
+    elseif method == "HYBRID_RF_REVERSE_VJP"
+        return x -> full_implicit_hybrid_rf_reverse_vjp_value_grad(subjects, x, representation; dt=dt,
+                                                                     maxiter_eta=maxiter_eta, eta_cache=eta_cache)
+    elseif method == "HYBRID_RRH_REVERSE_VJP"
+        return x -> full_implicit_hybrid_rrh_reverse_vjp_value_grad(subjects, x, representation; dt=dt,
+                                                                      maxiter_eta=maxiter_eta, eta_cache=eta_cache)
+    elseif method == "REVERSE_DIRECT_FORWARD_CONTRACTION"
+        return x -> full_implicit_reverse_direct_forward_contraction_value_grad(subjects, x, representation; dt=dt,
+                                                                                maxiter_eta=maxiter_eta, eta_cache=eta_cache)
+    elseif method == "FULL_IMPLICIT_DIRECTIONAL_JVP"
+        return x -> full_implicit_directional_jvp_value_grad(subjects, x, representation; dt=dt,
+                                                           maxiter_eta=maxiter_eta, eta_cache=eta_cache)
+    elseif method == "ALMQUIST_FORWARD"
+        return x -> almquist_forward_value_grad(subjects, x, representation; dt=dt,
+                                                maxiter_eta=maxiter_eta, eta_cache=eta_cache)
+    elseif method == "LAPLACE_IMPLICIT"
+        return x -> laplace_value_grad(subjects, x, representation; dt=dt,
+                                       maxiter_eta=maxiter_eta, eta_cache=eta_cache)
     elseif method == "FULL_UNROLL"
         use_unroll_cache = lowercase(get(ENV, "WARFARIN_JULIA_FULL_UNROLL_USE_ETA_CACHE", "false")) in
                            ("1", "true", "yes", "on")
@@ -1042,6 +1066,35 @@ function write_start_bank(path::AbstractString, starts::Matrix{Float64})
             println(io, join(vcat(["warfarin", string(s - 1)], string.(Vector{Float64}(starts[s, :]))), ","))
         end
     end
+end
+
+function read_start_bank_csv(path::AbstractString, lo::Vector{Float64}, hi::Vector{Float64}; n_starts::Int)
+    lines = readlines(path)
+    isempty(lines) && error("empty start bank: $path")
+    header = strip.(split(lines[1], ','))
+    indices = Int[]
+    for name in PARAM_NAMES
+        idx = findfirst(==(name), header)
+        idx === nothing && error("start bank $path is missing parameter column $name")
+        push!(indices, idx)
+    end
+    rows = Vector{Vector{Float64}}()
+    for line in lines[2:end]
+        isempty(strip(line)) && continue
+        fields = strip.(split(line, ','))
+        length(fields) >= maximum(indices) || error("malformed start-bank row in $path")
+        theta = [parse(Float64, fields[idx]) for idx in indices]
+        length(theta) == length(lo) || error("start bank dimensionality mismatch")
+        theta .= min.(max.(theta, lo), hi)
+        push!(rows, theta)
+        length(rows) >= n_starts && break
+    end
+    length(rows) < n_starts && error("start bank $path has $(length(rows)) rows; expected at least $n_starts")
+    starts = Matrix{Float64}(undef, n_starts, length(PARAM_NAMES))
+    for i in 1:n_starts
+        starts[i, :] .= rows[i]
+    end
+    return starts
 end
 
 mutable struct EvalCache
@@ -1306,7 +1359,7 @@ function main()
     maxiter_outer = parse(Int, get(ENV, "WARFARIN_JULIA_MAXITER_OUTER", "50"))
     full_unroll_steps = parse(Int, get(ENV, "WARFARIN_JULIA_FULL_UNROLL_STEPS", string(maxiter_eta)))
     dt = parse(Float64, get(ENV, "WARFARIN_JULIA_DT", "0.25"))
-    methods = split_tokens(get(ENV, "WARFARIN_JULIA_METHODS", "FULL_IMPLICIT,FULL_UNROLL_1NEWTON,STOP,FD"))
+    methods = split_tokens(get(ENV, "WARFARIN_JULIA_METHODS", "FULL_IMPLICIT,FULL_UNROLL,STOP,FD"))
     reps = [parse_rep(x) for x in split_tokens(get(ENV, "WARFARIN_JULIA_REPRESENTATIONS", "ode"))]
     outdir = get(ENV, "WARFARIN_JULIA_OUTDIR", joinpath(@__DIR__, "tables"))
     mkpath(outdir)
@@ -1316,7 +1369,9 @@ function main()
     full_unroll_retry_delta = parse(Float64, get(ENV, "WARFARIN_JULIA_FULL_UNROLL_RETRY_DELTA", "0.5"))
 
     lo, hi = theta_bounds()
-    starts = sample_starts(n_starts, base_x0(), lo, hi)
+    starts_csv = get(ENV, "WARFARIN_JULIA_STARTS_CSV", "")
+    starts = isempty(starts_csv) ? sample_starts(n_starts, base_x0(), lo, hi) :
+        read_start_bank_csv(starts_csv, lo, hi; n_starts=n_starts)
     write_start_bank(starts_path, starts)
 
     println("Warfarin Julia multistart methods")
@@ -1326,6 +1381,7 @@ function main()
             " maxiter_outer=", maxiter_outer, " dt=", dt)
     println("output=", outpath)
     println("starts=", starts_path)
+    !isempty(starts_csv) && println("matched_starts_csv=", starts_csv)
 
     for rep in reps, method in methods
         println("warming ", rep, " / ", method)
@@ -1355,6 +1411,9 @@ function main()
                                           maxiter_outer=maxiter_outer)
                 theta_hat = outcome.theta
                 ad_eval, ad_eval_max_eta_grad, ad_eval_n_conv =
+                    canonical_method(method) == "LAPLACE_IMPLICIT" ?
+                    safe_laplace_population_evaluation(subjects, theta_hat, rep; dt=dt,
+                                                       maxiter_eta=maxiter_eta) :
                     safe_ad_population_evaluation(subjects, theta_hat, rep; dt=dt,
                                                   maxiter_eta=maxiter_eta)
                 if full_unroll_auto_retry && canonical_method(method) == "FULL_UNROLL"
@@ -1387,7 +1446,7 @@ function main()
                 stop_eval = ad_eval
                 row = (
                     model="warfarin",
-                    implementation=canonical_method(method) == "FD" ? "julia_finite_difference" : "julia_forward_eta",
+                    implementation=canonical_method(method) == "FD" ? "julia_finite_difference" : canonical_method(method) == "ALMQUIST_FORWARD" ? "julia_almquist_forward_sensitivity" : canonical_method(method) == "FULL_IMPLICIT_DIRECTIONAL_JVP" ? "julia_directional_jvp_contraction" : canonical_method(method) == "FULL_IMPLICIT_REVERSE_VJP" ? "julia_reverse_mode_vjp" : startswith(canonical_method(method), "HYBRID_") ? "julia_hybrid_reverse_vjp" : canonical_method(method) == "REVERSE_DIRECT_FORWARD_CONTRACTION" ? "julia_reverse_direct_forward_contraction" : canonical_method(method) == "LAPLACE_IMPLICIT" ? "laplace_companion_adapted_combined" : "julia_adjoint_contraction",
                     representation=string(rep),
                     method=outcome.method,
                     start_id=s - 1,

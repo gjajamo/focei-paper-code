@@ -12,7 +12,7 @@ const TIMES = [0.25, 0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 24.0, 48.0]
 const ETA_DIM = 2
 const BIG = 1.0e12
 const MIN_POS = 1.0e-12
-const RESIDUAL_MODEL = let value = Symbol(lowercase(get(ENV, "FLIPFLOP_JULIA_RESIDUAL_MODEL", "combined")))
+const RESIDUAL_MODEL = let value = Symbol(lowercase(get(ENV, "FLIPFLOP_JULIA_RESIDUAL_MODEL", "additive")))
     value in (:additive, :combined) ||
         error("FLIPFLOP_JULIA_RESIDUAL_MODEL must be additive or combined; got $value")
     value
@@ -133,6 +133,7 @@ function simulate_subjects(theta::Vector{Float64}; n_subj::Int=50, seed::Int=123
             mu = pk_conc(t, ka, cl, v)
             sd = sqrt(residual_variance(mu, pars.sigma_add, pars.sigma_prop))
             observation = mu + randn(rng) * sd
+            # Preserve the historical additive simulation exactly. The new
             # combined-error experiment uses its stated Gaussian likelihood
             # without censoring or truncating negative simulated observations.
             push!(y, RESIDUAL_MODEL == :additive ? max(observation, 1.0e-8) : observation)
@@ -1034,6 +1035,30 @@ function method_evaluator(method::String, subjects::Vector{SubjectData}; maxiter
     elseif method == "FULL_IMPLICIT"
         return theta -> full_implicit_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
                                                  eta_solver=eta_solver, eta_cache=eta_cache)
+    elseif method == "FULL_IMPLICIT_REVERSE_VJP"
+        return theta -> full_implicit_reverse_vjp_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
+                                                              eta_solver=eta_solver, eta_cache=eta_cache)
+    elseif method == "HYBRID_FF_REVERSE_VJP"
+        return theta -> full_implicit_hybrid_ff_reverse_vjp_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
+                                                                          eta_solver=eta_solver, eta_cache=eta_cache)
+    elseif method == "HYBRID_RF_REVERSE_VJP"
+        return theta -> full_implicit_hybrid_rf_reverse_vjp_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
+                                                                          eta_solver=eta_solver, eta_cache=eta_cache)
+    elseif method == "HYBRID_RRH_REVERSE_VJP"
+        return theta -> full_implicit_hybrid_rrh_reverse_vjp_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
+                                                                           eta_solver=eta_solver, eta_cache=eta_cache)
+    elseif method == "REVERSE_DIRECT_FORWARD_CONTRACTION"
+        return theta -> full_implicit_reverse_direct_forward_contraction_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
+                                                                                     eta_solver=eta_solver, eta_cache=eta_cache)
+    elseif method == "FULL_IMPLICIT_DIRECTIONAL_JVP"
+        return theta -> full_implicit_directional_jvp_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
+                                                               eta_solver=eta_solver, eta_cache=eta_cache)
+    elseif method == "ALMQUIST_FORWARD"
+        return theta -> almquist_forward_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
+                                                    eta_solver=eta_solver, eta_cache=eta_cache)
+    elseif method == "LAPLACE_IMPLICIT"
+        return theta -> laplace_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
+                                           eta_solver=eta_solver, eta_cache=eta_cache)
     elseif method == "FULL_UNROLL_1NEWTON"
         return theta -> one_step_newton_value_grad(subjects, theta; maxiter_eta=maxiter_eta,
                                                    eta_solver=eta_solver, eta_cache=eta_cache)
@@ -1319,7 +1344,7 @@ function main()
     maxiter_outer = parse(Int, get(ENV, "FLIPFLOP_JULIA_MAXITER_OUTER", "50"))
     full_unroll_steps = parse(Int, get(ENV, "FLIPFLOP_JULIA_FULL_UNROLL_STEPS", string(maxiter_eta)))
     eta_solver = parse_eta_solver()
-    methods = split_methods(get(ENV, "FLIPFLOP_JULIA_METHODS", "FULL_IMPLICIT,FULL_UNROLL_1NEWTON,STOP,FD"))
+    methods = split_methods(get(ENV, "FLIPFLOP_JULIA_METHODS", "FULL_IMPLICIT,FULL_UNROLL,STOP,FD"))
     outdir = get(ENV, "FLIPFLOP_JULIA_OUTDIR", joinpath(@__DIR__, "tables"))
     mkpath(outdir)
     prefix = output_prefix()
@@ -1387,13 +1412,16 @@ function main()
                                                     eta_solver=eta_solver)
             theta_hat = Vector{Float64}(Optim.minimizer(result))
             ad_eval, ad_eval_max_eta_grad, ad_eval_n_conv =
+                method == "LAPLACE_IMPLICIT" ?
+                safe_laplace_population_evaluation(subjects, theta_hat; maxiter_eta=maxiter_eta,
+                                                   eta_solver=eta_solver) :
                 safe_ad_population_evaluation(subjects, theta_hat; maxiter_eta=maxiter_eta,
                                               eta_solver=eta_solver)
             stop_eval = ad_eval
             row = (
                 model=model_label(),
                 residual_model=string(RESIDUAL_MODEL),
-                implementation=method == "FD" ? "julia_finite_difference" : "julia_forward_eta",
+                implementation=method == "FD" ? "julia_finite_difference" : method == "ALMQUIST_FORWARD" ? "julia_almquist_forward_sensitivity" : method == "FULL_IMPLICIT_DIRECTIONAL_JVP" ? "julia_directional_jvp_contraction" : method == "FULL_IMPLICIT_REVERSE_VJP" ? "julia_reverse_mode_vjp" : startswith(method, "HYBRID_") ? "julia_hybrid_reverse_vjp" : method == "REVERSE_DIRECT_FORWARD_CONTRACTION" ? "julia_reverse_direct_forward_contraction" : method == "LAPLACE_IMPLICIT" ? "laplace_companion_adapted_combined" : "julia_adjoint_contraction",
                 method=method,
                 start_id=s - 1,
                 n_subjects=n_subj,
