@@ -1,93 +1,89 @@
-# FOCEI paper code
+# FOCEI derivative benchmark code
 
-Reproducible Julia implementation for the combined additive-plus-proportional residual-error benchmarks reported in the FOCEI automatic-differentiation manuscript:
+This repository contains the Julia code for the FOCEI automatic-differentiation manuscript. It reproduces the two combined additive-plus-proportional residual-error benchmarks used in the paper:
 
-- a simulated one-compartment population PK model with absorption/elimination ambiguity;
-- a public warfarin PK/PD model with separate combined PK and PD residual-error models.
+- a deterministic simulated Friberg--Karlsson PK--myelosuppression model;
+- a public warfarin PK/PD model.
+
+The repository intentionally excludes manuscript files, generated figures, simulation outputs, private workspace material, and the superseded one-compartment exploratory case study.
+
+## Benchmark models
+
+The Friberg--Karlsson benchmark has eight ODE states, nine structural population parameters, seven IIV parameters, and four residual-error parameters (20 population parameters total). Its retained targeted design has 51 subjects assigned equally to 50-, 80-, and 110-mg oral doses. Each subject has 23 PK observations through 168 h and 77 ANC observations through 672 h, with additional 6-h ANC samples across the decline--nadir--recovery interval.
+
+The warfarin benchmark uses the public PK/PD dataset, seven structural parameters with IIV, and separate combined error models for PK and PD (18 population parameters total). The supplied runner uses the first 32 subjects, as in the study's matched-start comparison.
 
 ## Methods
 
-The primary manuscript comparison uses matched starts for four population-gradient strategies:
+The scripts expose the following population-derivative strategies:
 
-- `FULL_IMPLICIT`: implicit/adjoint AD through the converged EBE score equation;
-- `FULL_UNROLL_1NEWTON`: one exact Newton update from a detached converged EBE;
-- `STOP`: AD with the converged EBE held fixed;
-- `FD`: fully finite-difference population profiling and EBE determination.
+- `FULL_IMPLICIT_DIRECTIONAL_JVP`: the implicit/adjoint FOCEI derivative, computing the required mixed-derivative contraction without materializing the complete EBE-sensitivity matrix;
+- `ONE_STEP_NEWTON` (Friberg--Karlsson) and `FULL_UNROLL_1NEWTON` (warfarin): one exact Newton update from a detached converged EBE; the Friberg--Karlsson runner enables its finite-residual correction by default;
+- `STOP`: AD with the EBE treated as fixed;
+- `FD`: an independently profiled finite-difference baseline;
+- `ALMQUIST_FORWARD`: the forward EBE-sensitivity calculation following Almquist et al.;
+- `LAPLACE_DIRECTIONAL_IMPLICIT` / `LAPLACE_IMPLICIT`: a directional implicit Laplace comparator. Its objective differs from the FOCEI target, so it is useful for timing and implementation comparisons rather than direct FOCEI objective comparisons.
 
-`FULL_UNROLL_1NEWTON` is the code name for the manuscript's one-step Newton method.
-
-The release also contains a head-to-head implementation comparison of two mathematically equivalent full implicit derivatives:
-
-- `ALMQUIST_FORWARD`: forward sensitivities of the EBE score equation, following Almquist et al.;
-- `FULL_IMPLICIT_DIRECTIONAL_JVP`: the adjoint form with an exact one-direction EBE Jacobian--vector product (JVP).
-
-For a subject conditional objective `h(theta, eta)`, score `g = d h / d eta`, mixed score derivative `B = d g / d theta`, and adjoint `lambda`, the directional implementation evaluates
+For a conditional objective `h(theta, eta)`, score `g = d h / d eta`, mixed score derivative `B = d g / d theta`, and adjoint `lambda`, the directional implementation evaluates the required contraction as
 
 ```text
 B' * lambda = d/dtheta [ d/dt h(theta, eta + t * lambda) | t = 0 ].
 ```
 
-It therefore obtains precisely the mixed contraction needed by the implicit FOCEI gradient without materializing the full EBE-sensitivity matrix. It is not a different FOCEI approximation or a one-step-Newton method.
-
-With identical combined-error targets, exact-Newton EBE solvers, starts, iteration limits, and eight Julia threads, its paired median wall-time speed-up versus `ALMQUIST_FORWARD` was 1.04-fold for the 100-start synthetic PK comparison and 1.07-fold for the 10-start warfarin comparison. Local gradient agreement was at machine precision.
-
 ## Requirements
 
-- Julia 1.10.4 (the committed `Manifest.toml` locks the manuscript environment);
-- the Julia packages in `Project.toml`;
-- eight CPU threads for the reported multi-start runs.
+- Julia 1.10.4 (the committed `Manifest.toml` fixes the study environment);
+- the packages declared in `Project.toml`;
+- multiple CPU threads for practical multi-start runs. The manuscript timing experiments used eight Julia threads.
 
-Instantiate the environment once:
+Instantiate the project once:
 
 ```powershell
 julia --project=. -e "using Pkg; Pkg.instantiate()"
 ```
 
-## Data
+## Warfarin data
 
-The one-compartment data are simulated deterministically by the code (seed 123). The warfarin data are public but are not redistributed here. Download them before running the warfarin benchmark:
+The warfarin data are public but are not redistributed here. Download them before running the warfarin benchmark:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/download_warfarin_data.ps1
 ```
 
-The download is saved to `data/warfarin_dat.csv`, which is ignored by Git. The source data and workshop materials are:
+This writes `data/warfarin_dat.csv`, which is ignored by Git. The source data and workshop materials are:
 
 - Holford N. *Warfarin PK/PD workshop materials and dataset (public).* University of Auckland. [Workshop materials](https://holford.fmhs.auckland.ac.nz/docs/PKPDWorkshop/WarfarinUnderstanding.pdf); [dataset](https://holford.fmhs.auckland.ac.nz/research/nlmixr/warfarin/warfarin_dat.csv). Accessed March 12, 2026.
 
-## Run the primary benchmarks
+## Run the matched-start benchmarks
+
+The top-level Friberg--Karlsson runner defaults to ten matched starts, the targeted 51-subject design, and all six methods:
 
 ```powershell
-julia -t 8 --project=. flipflop_combined_multistart.jl
-julia -t 8 --project=. warfarin_combined_multistart.jl
+julia -t 8 --project=. friberg_karlsson_targeted_multistart.jl
 ```
 
-The default runs use 100 matched starts for the one-compartment model and 10 for warfarin. Results are written under `outputs/`, which is ignored by Git.
-
-## Run the directional-JVP versus forward-sensitivity comparison
-
-After downloading the warfarin data, run:
+After downloading the data, run the all-IIV warfarin comparison:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run_directional_jvp_comparison.ps1 -Threads 8
+julia -t 8 --project=. scripts/run_warfarin_all_iiv_matched.jl
 ```
 
-The script uses the same generated start bank for `ALMQUIST_FORWARD` and `FULL_IMPLICIT_DIRECTIONAL_JVP` within each case study. It writes its results under `outputs/DirectionalJVPvsAlmquist/`.
-
-For a short smoke run, lower the run limits before invoking a wrapper:
+Both runners write deterministic start banks and result tables under `outputs/`, which is ignored by Git. Run one method at a time with the same start bank by setting the applicable `*_METHODS` and `*_OUTDIR` environment variables. For example:
 
 ```powershell
-$env:FLIPFLOP_JULIA_N_STARTS = '1'
-$env:FLIPFLOP_JULIA_MAXITER_OUTER = '2'
-$env:FLIPFLOP_JULIA_MAXITER_ETA = '3'
-$env:FLIPFLOP_JULIA_METHODS = 'ALMQUIST_FORWARD,FULL_IMPLICIT_DIRECTIONAL_JVP'
-julia -t 2 --project=. flipflop_combined_multistart.jl
+$env:FK_METHODS = 'FULL_IMPLICIT_DIRECTIONAL_JVP,ALMQUIST_FORWARD'
+$env:FK_N_STARTS = '2'
+julia -t 8 --project=. friberg_karlsson_targeted_multistart.jl
 ```
 
 ## Validation
 
-The `test/` directory contains focused checks for the combined-error gradient, one-step Newton construction, and reverse-VJP prototype. The public implementation is research code. Before interpreting a full run, inspect EBE convergence diagnostics, common endpoint evaluations, and method-specific optimizer termination fields.
+The targeted Friberg--Karlsson design and two local warfarin derivative checks are provided in `test/`. They are intended as focused checks, not as short unit tests: each performs ODE solves and EBE optimizations.
 
-## Reproducibility scope
+```powershell
+julia -t 8 --project=. test/validate_friberg_karlsson_targeted_pkpd_design.jl
+julia -t 8 --project=. test/validate_warfarin_all_iiv.jl
+julia -t 8 --project=. test/validate_warfarin_one_step_explicit.jl
+```
 
-The source package contains the implementations needed to reproduce the reported combined-error case studies. It intentionally excludes manuscript figures, private workspace files, historical additive-only analyses, and output bundles. The repository license states the applicable reuse terms.
+Before interpreting a full optimization run, inspect the recorded EBE convergence diagnostics, common endpoint evaluations, and optimizer termination fields. This is research code supplied to reproduce the study.

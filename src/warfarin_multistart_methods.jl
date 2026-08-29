@@ -13,7 +13,7 @@ const PARAM_NAMES = vcat([
 ] : String[], [
     "logOM_KA", "logOM_CL", "logOM_V",
     "logOM_E0", "logOM_C50", "logOM_KE0",
-])
+], WARFARIN_EMAX_IIV ? ["logOM_EMAX"] : String[])
 
 struct FileTime
     low::UInt32
@@ -750,16 +750,71 @@ function full_implicit_value_grad(subjects::Vector{SubjectData}, x::Vector{Float
     return total, total_grad, max_eta_grad, n_conv
 end
 
-# Solve the primal EBE to convergence, detach it, and differentiate one exact
-# Newton update. At an exact root this has the same local mode sensitivity as
-# implicit differentiation, but it records a distinct one-step graph.
-function one_step_newton_subject_value(subj::SubjectData, x, eta_star::Vector{Float64},
-                                       representation::Symbol; dt::Float64=0.25)
+# Direct-AD reference for the detached, one-exact-Newton map. It is retained
+# for validation of the explicit tangent below, but is not used for production
+# optimization because it propagates all population-parameter dual directions
+# through the exact Hessian and its factorization.
+function one_step_newton_subject_value_ad_reference(subj::SubjectData, x, eta_star::Vector{Float64},
+                                                    representation::Symbol; dt::Float64=0.25)
     eta = eltype(x).(eta_star)
     g = ForwardDiff.gradient(e -> h_i(subj, x, e, representation; dt=dt), eta)
     H = ForwardDiff.hessian(e -> h_i(subj, x, e, representation; dt=dt), eta)
     step = small_spd_solve_ad(H, g)
     return focei_subject_fixed_eta(subj, x, eta .- step, representation; dt=dt)
+end
+
+# The scalar bilinear form w' H(theta) u. Its population derivative supplies
+# w' (dH/dtheta) u without materializing a q-by-q-by-P tensor.
+function one_step_newton_hessian_bilinear(subj::SubjectData, x, eta::Vector{Float64},
+                                          left::Vector{Float64}, right::Vector{Float64},
+                                          representation::Symbol; dt::Float64=0.25)
+    f = e -> h_i(subj, x, e, representation; dt=dt)
+    return ForwardDiff.derivative(
+        s -> ForwardDiff.derivative(t -> f(eta .+ s .* left .+ t .* right), 0.0),
+        0.0,
+    )
+end
+
+# Explicit derivative of one exact Newton map initialized from a detached EBE.
+# For eta_plus = eta_star - H^-1 g, it evaluates
+# d eta_plus/dtheta = -H^-1 B + H^-1 (dH/dtheta) H^-1 g,
+# including the finite-residual term. At an exact root this reduces to the
+# usual implicit sensitivity -H^-1 B.
+function one_step_newton_subject_value_grad_explicit(subj::SubjectData, x::Vector{Float64},
+                                                      eta_star::Vector{Float64},
+                                                      representation::Symbol; dt::Float64=0.25)
+    eta = Vector{Float64}(eta_star)
+    score = e -> h_i(subj, x, e, representation; dt=dt)
+    g = Vector{Float64}(ForwardDiff.gradient(score, eta))
+    H = Matrix{Float64}(ForwardDiff.hessian(score, eta))
+    Hs = 0.5 .* (H .+ transpose(H))
+    any(!isfinite, Hs) && error("non-finite exact Hessian in one-step Newton")
+    factor = cholesky(Symmetric(Hs); check=true)
+    u = factor \ g
+    eta_plus = eta .- u
+
+    value = Float64(focei_subject_fixed_eta(subj, x, eta_plus, representation; dt=dt))
+    direct = Vector{Float64}(ForwardDiff.gradient(
+        xx -> focei_subject_fixed_eta(subj, xx, eta_plus, representation; dt=dt), x,
+    ))
+    f_eta = Vector{Float64}(ForwardDiff.gradient(
+        ee -> focei_subject_fixed_eta(subj, x, ee, representation; dt=dt), eta_plus,
+    ))
+    B = Matrix{Float64}(ForwardDiff.jacobian(
+        xx -> ForwardDiff.gradient(e -> h_i(subj, xx, e, representation; dt=dt), eta), x,
+    ))
+    sensitivity = -(factor \ B)
+    gradient = direct .+ transpose(sensitivity) * f_eta
+
+    if norm(g) > 0.0
+        w = factor \ f_eta
+        residual_correction = ForwardDiff.gradient(
+            xx -> one_step_newton_hessian_bilinear(subj, xx, eta, w, u, representation; dt=dt),
+            x,
+        )
+        gradient .+= Vector{Float64}(residual_correction)
+    end
+    return value, Vector{Float64}(gradient)
 end
 
 function one_step_newton_value_grad(subjects::Vector{SubjectData}, x::Vector{Float64},
@@ -773,11 +828,9 @@ function one_step_newton_value_grad(subjects::Vector{SubjectData}, x::Vector{Flo
     vals = zeros(length(subjects))
     grads = [zeros(length(x)) for _ in subjects]
     @threads for i in eachindex(subjects)
-        subj = subjects[i]
-        eta_star = etas[i]
-        fx = xx -> one_step_newton_subject_value(subj, xx, eta_star, representation; dt=dt)
-        vals[i] = Float64(fx(x))
-        grads[i] = outer_gradient(fx, x)
+        vals[i], grads[i] = one_step_newton_subject_value_grad_explicit(
+            subjects[i], x, etas[i], representation; dt=dt,
+        )
     end
     total = sum(vals)
     total_grad = vec(sum(reduce(hcat, grads), dims=2))
@@ -1031,7 +1084,7 @@ function base_x0()
     ]
     residual_extra = warfarin_combined_error() ? [log(0.1), log(0.1)] : Float64[]
     return vcat(fixed, residual_extra, [
-        fill(log(0.3), 6)...,
+        fill(log(0.3), ETA_DIM)...,
     ])
 end
 
@@ -1044,8 +1097,8 @@ function theta_bounds()
           log(50.0), log(200.0)]
     lo_residual = warfarin_combined_error() ? [log(1.0e-4), log(1.0e-4)] : Float64[]
     hi_residual = warfarin_combined_error() ? [log(5.0), log(5.0)] : Float64[]
-    lo = vcat(lo_fixed, lo_residual, fill(log(1.0e-4), 6))
-    hi = vcat(hi_fixed, hi_residual, fill(log(5.0), 6))
+    lo = vcat(lo_fixed, lo_residual, fill(log(1.0e-4), ETA_DIM))
+    hi = vcat(hi_fixed, hi_residual, fill(log(5.0), ETA_DIM))
     return lo, hi
 end
 

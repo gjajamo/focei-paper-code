@@ -4,7 +4,11 @@ using Statistics
 using ForwardDiff
 using ReverseDiff
 
-const ETA_DIM = 6
+# The default reproduces the retained six-IIV Warfarin specification.  The
+# all-structural-IIV scale experiment additionally gives EMAX its own EBE.
+const WARFARIN_EMAX_IIV = lowercase(get(ENV, "WARFARIN_JULIA_EMAX_IIV", "false")) in
+                         ("1", "true", "yes", "on")
+const ETA_DIM = WARFARIN_EMAX_IIV ? 7 : 6
 const BIG = 1.0e12
 
 struct SubjectData
@@ -136,7 +140,7 @@ function predict_pd(subj::SubjectData, x, eta, representation::Symbol; dt::Float
     e0 = exp(x[4] + eta[4])
     c50 = exp(x[5] + eta[5])
     ke0 = exp(x[6] + eta[6])
-    emax = sigmoid(x[7])
+    emax = sigmoid(x[7] + (WARFARIN_EMAX_IIV ? eta[7] : zero(eta[1])))
     dose = typeof(ka + cl + v + e0 + c50 + ke0)(subj.dose_mg)
 
     ce = if representation == :closed_form

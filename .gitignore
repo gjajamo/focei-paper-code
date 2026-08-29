@@ -1,7 +1,10 @@
 /outputs/
 /logs/
+/tables/
 /data/warfarin_dat.csv
 /.julia/
+*.bak
+*.before_*
 __pycache__/
 *.pyc
 .DS_Store
