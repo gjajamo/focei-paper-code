@@ -21,7 +21,8 @@ The scripts expose the following population-derivative strategies:
 - `ONE_STEP_NEWTON` (Friberg--Karlsson) and `FULL_UNROLL_1NEWTON` (warfarin): one exact Newton update from a detached converged EBE; the Friberg--Karlsson runner enables its finite-residual correction by default;
 - `STOP`: AD with the EBE treated as fixed;
 - `FD`: an independently profiled finite-difference baseline;
-- `ALMQUIST_FORWARD`: the forward EBE-sensitivity calculation following Almquist et al.;
+- `ALMQUIST_FORWARD`: the AD-accelerated forward EBE-sensitivity calculation following Almquist et al.;
+- `ALMQUIST_SENSITIVITY_ODE`: a literal, Float64 forward-sensitivity ODE realization. Model-specific first- and second-order right-hand-side coefficients are generated at build time, allowing comparison of an ODE-sensitivity implementation with the AD-accelerated full-matrix calculation;
 - `LAPLACE_DIRECTIONAL_IMPLICIT` / `LAPLACE_IMPLICIT`: a directional implicit Laplace comparator. Its objective differs from the FOCEI target, so it is useful for timing and implementation comparisons rather than direct FOCEI objective comparisons.
 
 For a conditional objective `h(theta, eta)`, score `g = d h / d eta`, mixed score derivative `B = d g / d theta`, and adjoint `lambda`, the directional implementation evaluates the required contraction as
@@ -34,7 +35,8 @@ B' * lambda = d/dtheta [ d/dt h(theta, eta + t * lambda) | t = 0 ].
 
 - Julia 1.10.4 (the committed `Manifest.toml` fixes the study environment);
 - the packages declared in `Project.toml`;
-- multiple CPU threads for practical multi-start runs. The manuscript timing experiments used eight Julia threads.
+- multiple CPU threads for practical multi-start runs. The manuscript timing experiments used eight Julia threads;
+- optional, only to regenerate the committed sensitivity-ODE coefficient files: Python 3 with `sympy` (`python scripts/generate_almquist_sensitivity_ode_derivatives.py`). Runtime benchmark calculations do not depend on Python or SymPy.
 
 Instantiate the project once:
 
@@ -68,7 +70,7 @@ After downloading the data, run the all-IIV warfarin comparison:
 julia -t 8 --project=. scripts/run_warfarin_all_iiv_matched.jl
 ```
 
-Both runners write deterministic start banks and result tables under `outputs/`, which is ignored by Git. Run one method at a time with the same start bank by setting the applicable `*_METHODS` and `*_OUTDIR` environment variables. For example:
+Both runners write deterministic start banks and result tables under `outputs/`, which is ignored by Git. Run one method at a time with the same start bank by setting the applicable `*_METHODS` and `*_OUTDIR` environment variables. The literal sensitivity-ODE comparator is opt-in: set the applicable method variable to `ALMQUIST_SENSITIVITY_ODE`; the generated coefficient files are already committed. For example:
 
 ```powershell
 $env:FK_METHODS = 'FULL_IMPLICIT_DIRECTIONAL_JVP,ALMQUIST_FORWARD'

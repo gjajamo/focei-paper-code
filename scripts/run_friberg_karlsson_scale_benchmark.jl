@@ -230,6 +230,26 @@ function newton_step(H, g)
     return Hs \ g
 end
 
+# At a converged conditional mode the exact Hessian is positive definite and
+# the Cholesky path is used. Deliberately capped EBE calculations can be
+# evaluated before that condition holds; their exact Hessian is nevertheless
+# the matrix required by the sensitivity formula, so use a pivoted symmetric-
+# indefinite factorization rather than treating non-positive definiteness as
+# a numerical failure.
+function exact_hessian_solve(H, rhs)
+    Hs = Matrix{Float64}((H + transpose(H)) / 2)
+    chol = cholesky(Symmetric(Hs); check=false)
+    if issuccess(chol)
+        return chol \ rhs
+    end
+    fac = bunchkaufman(Symmetric(Hs); check=false)
+    if issuccess(fac)
+        solution = fac \ rhs
+        all(isfinite, solution) && return solution
+    end
+    return Hs \ rhs
+end
+
 function solve_mode(subj::FKSubject, theta; maxiter::Int=50, tol::Float64=parse(Float64, get(ENV, "FK_EBE_TOL", "5e-6")))
     eta = zeros(Q)
     f = e -> h_i(subj, theta, e)
@@ -284,7 +304,7 @@ function almquist_subject_value_grad(subj::FKSubject, theta, eta)
     dldeta = ForwardDiff.gradient(e -> logdet_spd(focei_curvature(subj, theta, e)), eta)
     B = ForwardDiff.jacobian(x -> ForwardDiff.gradient(e -> h_i(subj, x, e), eta), theta)
     Hs = Matrix{Float64}((H + transpose(H)) / 2)
-    S = -(cholesky(Symmetric(Hs); check=true) \ Matrix{Float64}(B))
+    S = -exact_hessian_solve(Hs, Matrix{Float64}(B))
     grad = 2 .* (dh .+ 0.5 .* dldtheta .+ transpose(S) * (0.5 .* dldeta))
     return Float64(value), Vector{Float64}(grad)
 end
@@ -302,7 +322,7 @@ function directional_jvp_subject_value_grad(subj::FKSubject, theta, eta)
     dldtheta = ForwardDiff.gradient(x -> logdet_spd(focei_curvature(subj, x, eta)), theta)
     dldeta = ForwardDiff.gradient(e -> logdet_spd(focei_curvature(subj, theta, e)), eta)
     Hs = Matrix{Float64}((H + transpose(H)) / 2)
-    lambda = cholesky(Symmetric(Hs); check=true) \ (0.5 .* Vector{Float64}(dldeta))
+    lambda = exact_hessian_solve(Hs, 0.5 .* Vector{Float64}(dldeta))
     contraction = ForwardDiff.gradient(x -> directional_score_contraction(subj, x, eta, lambda), theta)
     grad = 2 .* (dh .+ 0.5 .* dldtheta .- contraction)
     return Float64(value), Vector{Float64}(grad)

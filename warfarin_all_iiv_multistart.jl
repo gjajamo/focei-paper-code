@@ -15,5 +15,6 @@ ENV["WARFARIN_JULIA_OUTDIR"] = get(
 
 include(joinpath(@__DIR__, "src", "warfarin_multistart_methods.jl"))
 include(joinpath(@__DIR__, "src", "warfarin_profile_comparators.jl"))
+include(joinpath(@__DIR__, "src", "almquist_warfarin_sensitivity_ode.jl"))
 include(joinpath(@__DIR__, "src", "warfarin_reverse_vjp.jl"))
 main()

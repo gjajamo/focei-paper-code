@@ -1025,6 +1025,9 @@ function method_evaluator(method::String, subjects::Vector{SubjectData}, represe
     elseif method == "ALMQUIST_FORWARD"
         return x -> almquist_forward_value_grad(subjects, x, representation; dt=dt,
                                                 maxiter_eta=maxiter_eta, eta_cache=eta_cache)
+    elseif method == "ALMQUIST_SENSITIVITY_ODE"
+        return x -> almquist_sensitivity_ode_value_grad(subjects, x, representation; dt=dt,
+                                                        maxiter_eta=maxiter_eta, eta_cache=eta_cache)
     elseif method == "LAPLACE_IMPLICIT"
         return x -> laplace_value_grad(subjects, x, representation; dt=dt,
                                        maxiter_eta=maxiter_eta, eta_cache=eta_cache)
@@ -1467,6 +1470,9 @@ function main()
                     canonical_method(method) == "LAPLACE_IMPLICIT" ?
                     safe_laplace_population_evaluation(subjects, theta_hat, rep; dt=dt,
                                                        maxiter_eta=maxiter_eta) :
+                    canonical_method(method) == "ALMQUIST_SENSITIVITY_ODE" ?
+                    sensitivity_ode_mode_value(subjects, theta_hat, rep; dt=dt,
+                                                maxiter_eta=maxiter_eta)[1:3] :
                     safe_ad_population_evaluation(subjects, theta_hat, rep; dt=dt,
                                                   maxiter_eta=maxiter_eta)
                 if full_unroll_auto_retry && canonical_method(method) == "FULL_UNROLL"
@@ -1499,7 +1505,7 @@ function main()
                 stop_eval = ad_eval
                 row = (
                     model="warfarin",
-                    implementation=canonical_method(method) == "FD" ? "julia_finite_difference" : canonical_method(method) == "ALMQUIST_FORWARD" ? "julia_almquist_forward_sensitivity" : canonical_method(method) == "FULL_IMPLICIT_DIRECTIONAL_JVP" ? "julia_directional_jvp_contraction" : canonical_method(method) == "FULL_IMPLICIT_REVERSE_VJP" ? "julia_reverse_mode_vjp" : startswith(canonical_method(method), "HYBRID_") ? "julia_hybrid_reverse_vjp" : canonical_method(method) == "REVERSE_DIRECT_FORWARD_CONTRACTION" ? "julia_reverse_direct_forward_contraction" : canonical_method(method) == "LAPLACE_IMPLICIT" ? "laplace_companion_adapted_combined" : "julia_adjoint_contraction",
+                    implementation=canonical_method(method) == "FD" ? "julia_finite_difference" : canonical_method(method) == "ALMQUIST_FORWARD" ? "julia_almquist_forward_sensitivity" : canonical_method(method) == "ALMQUIST_SENSITIVITY_ODE" ? "symbolic_sensitivity_ode_almquist" : canonical_method(method) == "FULL_IMPLICIT_DIRECTIONAL_JVP" ? "julia_directional_jvp_contraction" : canonical_method(method) == "FULL_IMPLICIT_REVERSE_VJP" ? "julia_reverse_mode_vjp" : startswith(canonical_method(method), "HYBRID_") ? "julia_hybrid_reverse_vjp" : canonical_method(method) == "REVERSE_DIRECT_FORWARD_CONTRACTION" ? "julia_reverse_direct_forward_contraction" : canonical_method(method) == "LAPLACE_IMPLICIT" ? "laplace_companion_adapted_combined" : "julia_adjoint_contraction",
                     representation=string(rep),
                     method=outcome.method,
                     start_id=s - 1,
